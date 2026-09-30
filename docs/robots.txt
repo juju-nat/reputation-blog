@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://juju-nat.github.io/reputation-blog/sitemap.xml

@@ -1,0 +1,27 @@
+# Examples of custom config
+
+module.exports = {
+  name: "Jane Natividad",
+  domain: "janenatividad.com",
+  tagline: "Healthcare innovation, leadership, and patient-centered solutions",
+  author: "Jane Natividad",
+  about: "Jane Natividad is a healthcare leader and founder of Saltus, committed to transforming healthcare delivery through technology, empathy, and evidence-based solutions.",
+  keywords: "Jane Natividad, healthcare, Saltus, digital health, patient care, healthcare innovation",
+  topics: [
+    "healthcare innovation and technology",
+    "patient-centered care",
+    "digital health transformation",
+    "healthcare leadership",
+    "telemedicine and remote care",
+    "healthcare policy and reform",
+    "women in healthcare leadership",
+    "mental health and wellness",
+    "healthcare data and privacy",
+    "community health initiatives"
+  ],
+  tone: "professional, compassionate, authoritative",
+  minWords: 800,
+  maxWords: 1500,
+  postsPerDay: 2,
+  slugFormat: "date",
+};

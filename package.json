@@ -1,0 +1,15 @@
+{
+  "name": "reputation-blog",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static SEO blog with automated daily content generation",
+  "type": "commonjs",
+  "scripts": {
+    "generate": "node scripts/generate-post.cjs",
+    "build": "node scripts/generate-post.cjs",
+    "publish": "bash scripts/publish.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
