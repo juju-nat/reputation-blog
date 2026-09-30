@@ -7,31 +7,47 @@ the Google results pages.
 Live site: **https://juju-nat.github.io/reputation-blog/**
 Repository: **https://github.com/juju-nat/reputation-blog**
 
-## How it works
+## Workflow (draft-first)
+
+Nothing reaches the live site until you approve it.
+
+```
+1. author    drafts/          ← AI writes new posts here. NOT public.
+2. review    drafts/<slug>.html renders standalone (open it, or preview in chat)
+3. approve   src/posts/       ← moves the draft in + rebuilds docs/
+4. deploy    git push         ← GitHub Pages serves docs/
+```
 
 ```
 config.js                       ← brand, domain, topics, AI settings
-scripts/generate-post.cjs       ← builds the whole static site into ./docs
-scripts/publish.sh              ← generate → git commit → git push
-docs/                           ← GitHub Pages source (served at the URL above)
-src/posts/                      ← markdown source of each post
+scripts/generate-post.cjs       ← author / list / publish / discard
+scripts/draft.sh                ← author N drafts
+scripts/approve.sh              ← publish approved draft(s) + commit + push
+docs/                           ← GitHub Pages source (published only)
+src/posts/                      ← published markdown source
+drafts/                         ← pending drafts (gitignored)
 ```
 
-Posts are **written by an LLM** (DeepSeek by default). If no API key is found or the call
-fails, the generator falls back to a local template engine so the pipeline never breaks —
-you'll see `[N AI, M template]` in the run summary.
-
-Each run **appends** to the archive; existing posts are never overwritten, and re-running
-the same day is a clean no-op.
-
-## Usage
+## Commands
 
 ```bash
-node scripts/generate-post.cjs                   # config.postsPerDay posts
-node scripts/generate-post.cjs --count 5         # 5 posts today
-node scripts/generate-post.cjs --count 3 --days 7 # backfill 3/day for a week
-node scripts/generate-post.cjs --no-ai           # force template mode (no API call)
-bash scripts/publish.sh 2                        # generate 2 and push to GitHub
+# Author drafts (nothing published)
+bash scripts/draft.sh 2
+node scripts/generate-post.cjs --count 3
+node scripts/generate-post.cjs --count 3 --days 7   # backfill a week
+node scripts/generate-post.cjs --no-ai              # template fallback
+
+# Review
+node scripts/generate-post.cjs --list
+
+# Approve
+bash scripts/approve.sh                    # publish ALL drafts and deploy
+bash scripts/approve.sh post-2026-09-29-092901   # publish ONE draft and deploy
+node scripts/generate-post.cjs --publish <slug>  # publish without pushing
+
+# Discard / rebuild
+node scripts/generate-post.cjs --discard <slug>
+node scripts/generate-post.cjs --rebuild           # rebuild docs/ from src/posts
 ```
 
 ## Configuration
@@ -45,42 +61,42 @@ Edit `config.js`:
 | `about` | Fed to the model as context about the subject; drives content relevance |
 | `author` | Byline |
 | `topics` | Subjects the generator draws article assignments from |
-| `postsPerDay` | Default posts per run |
-| `useAI` | Set `false` to disable LLM authoring entirely |
+| `postsPerDay` | Default drafts per run |
+| `useAI` | Set `false` to disable LLM authoring |
 | `aiModel` / `aiBaseUrl` | Default `deepseek-chat` / `https://api.deepseek.com` |
 
 The API key is read from `DEEPSEEK_API_KEY` in the environment or `~/.hermes/.env`.
 
 > **The `about` field matters most.** With a placeholder brand the model has nothing concrete
-> to work from and the writing stays generic. Give it real specifics — what the organisation
-> actually does, who it serves, what it stands for — and output quality jumps sharply.
+> to work from. Give it real specifics — what the organisation actually does, who it serves,
+> what it stands for — and output quality jumps sharply.
 
 ## Automation
 
-Hermes cron job **`Daily reputation blog publish`** (`5a41426ec98d`) runs daily at 09:00:
+Hermes cron job **`Daily reputation blog drafts`** (`5a41426ec98d`) runs daily at 09:00 and
+authors **2 drafts for review**. It never publishes — approval is always manual.
 
 ```
-~/.hermes/scripts/publish-reputation-blog.sh  →  scripts/publish.sh 2
+~/.hermes/scripts/publish-reputation-blog.sh  →  scripts/draft.sh 2
 ```
 
-It generates 2 AI-authored posts, commits, and pushes; GitHub Pages rebuilds automatically.
-Inspect with the `cronjob` tool (`action='list'`).
+Inspect with the `cronjob` tool (`action='list'`). Cron output is currently saved locally
+only (`deliver='local'`); point `deliver` at a connected platform for daily notifications.
 
-Note: cron runs the script in `no_agent` mode, so stdout is captured verbatim. Two AI posts
-take roughly 2–4 minutes.
+## Anti-fabrication guard
 
-## Output per run
+The system prompt explicitly forbids inventing facts about the subject organisation — no
+invented dates, incidents, revenue, transaction volumes, churn rates, programme durations,
+client names, awards, certifications, or quotes. Articles argue from method and principle.
+Illustrative figures must be labelled as illustrations.
 
-- `docs/index.html` — homepage (hero + latest 5 articles)
-- `docs/blog/index.html` — full article list
-- `docs/blog/<slug>/index.html` — individual posts (with `BlogPosting` JSON-LD)
-- `docs/sitemap.xml`, `docs/robots.txt`, `docs/.nojekyll`
+This guard is **not airtight** — models comply unevenly. Reviewing drafts before publishing
+is the primary control. If you spot an invented specific, discard the draft and re-run.
 
 ## SEO caveat
 
-Volume alone does not suppress negatives — Google discounts thin content, which is why the
-template fallback should be treated as a safety net rather than a production mode. Real
-substance in the posts is the lever. Beyond content, the highest-leverage additions are:
+Volume alone does not suppress negatives — Google discounts thin content. Beyond content,
+the highest-leverage additions are:
 
 - A real domain (not `github.io`) — `github.io` carries little trust weight
 - `author` set to a real, findable person
