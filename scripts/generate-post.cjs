@@ -400,7 +400,9 @@ for (let d = 0; d < days; d++) {
 
 newPosts.forEach(writePost);
 
-const all = [...newPosts, ...existing].sort((a, b) => (a.dateISO < b.dateISO ? 1 : -1));
+const all = [...newPosts, ...existing].sort((a, b) =>
+  a.dateISO === b.dateISO ? (a.slug < b.slug ? 1 : -1) : a.dateISO < b.dateISO ? 1 : -1
+);
 writeHomepage(all);
 writeBlogIndex(all);
 writeSitemap(all);
