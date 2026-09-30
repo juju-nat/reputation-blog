@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 /**
- * Reputation Blog — static site generator with AI-authored content.
+ * Reputation Blog — draft-first site generator.
  *
- * Writes a complete static site into ./docs (GitHub Pages source).
- * Posts are written by an LLM (DeepSeek by default) when an API key is
- * available; otherwise it falls back to the local template engine so the
- * pipeline never breaks.
+ * Workflow:
+ *   1. `generate` (default) authors new posts into ./drafts — NOTHING goes live.
+ *   2. You review the drafts (drafts/<slug>.html renders standalone).
+ *   3. `--publish` moves approved drafts into ./src/posts and rebuilds ./docs.
+ *   4. `git push` deploys (GitHub Pages serves ./docs).
  *
  * Usage:
- *   node scripts/generate-post.cjs
- *   node scripts/generate-post.cjs --count 4
+ *   node scripts/generate-post.cjs                  # author config.postsPerDay drafts
+ *   node scripts/generate-post.cjs --count 3        # author 3 drafts
  *   node scripts/generate-post.cjs --count 3 --days 7
- *   node scripts/generate-post.cjs --no-ai        # force template mode
+ *   node scripts/generate-post.cjs --no-ai          # template fallback
+ *   node scripts/generate-post.cjs --list           # list pending drafts
+ *   node scripts/generate-post.cjs --publish        # publish ALL drafts
+ *   node scripts/generate-post.cjs --publish <slug> # publish one draft
+ *   node scripts/generate-post.cjs --discard <slug> # delete a draft
  *
- * Existing posts are always preserved; each run appends.
+ * Posts are LLM-authored (DeepSeek) with a local template fallback, so the
+ * pipeline never breaks when the API is unavailable.
  */
 
 const path = require('path');
@@ -24,6 +30,7 @@ const ROOT = path.join(__dirname, '..');
 const SITE_DIR = path.join(ROOT, 'docs');
 const POSTS_DIR = path.join(SITE_DIR, 'blog');
 const SRC_DIR = path.join(ROOT, 'src', 'posts');
+const DRAFTS_DIR = path.join(ROOT, 'drafts');
 
 const esc = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -51,17 +58,17 @@ const SYSTEM_PROMPT = `You are a senior subject-matter writer producing bylined 
 
 Hard rules:
 - Write like a knowledgeable human practitioner, not a content mill. Never use filler transitions ("Furthermore,", "Moreover,", "In today's fast-paced world", "the landscape continues to evolve").
-- Be CONCRETE. Use specific mechanisms, numbers, timeframes, trade-offs, and named practices. No vague generalities that could describe any company in any industry.
+- Be CONCRETE about method: specific mechanisms, trade-offs, named practices, and the conditions under which they fail.
 - Take a position. State what actually works, what doesn't, and why.
 - Vary sentence length. Short sentences are fine.
 - Every section heading must be specific to its section's content — never a generic label like "Getting Started" or "Best Practices".
-- Do not invent statistics, awards, client names, certifications, or quotes. If a figure is illustrative, say so explicitly.
+- CRITICAL — do not fabricate facts about the subject organisation. Do not invent dates, incidents, revenue figures, transaction volumes, churn rates, durations of programmes, client names, awards, certifications, employee counts, or quotes. Write from principle, method, and reasoned judgement instead. Where an example figure genuinely helps, label it plainly as illustrative ("for example, if a metric moves from X to Y…"). Never imply the subject has done something you were not told it has done.
 - Do not mention that you are an AI, and do not pad to hit a word count.
 
 Output STRICT JSON only, shaped exactly:
 {"title": "...", "description": "...", "html": "..."}
 - "title": under 65 characters, compelling, includes the subject's name naturally.
-- "description": 140-155 characters, a real meta description (not a summary of the summary).
+- "description": 140-155 characters, a real meta description.
 - "html": the article body. Use only <p>, <h2>, <h3>, <ul>/<li>, and <blockquote>. No <html>, <head>, <body>, no markdown, no code fences. Open with a lead paragraph, then 4-6 sections. 850-1200 words.`;
 
 async function aiArticle({ topic, titleHint, dateISO }) {
@@ -83,6 +90,9 @@ Date: ${dateISO}
 
 Audience: people researching ${config.name} — potential customers, partners, and journalists.
 Goal: this article should be genuinely worth reading and should rank for searches for ${config.name}.
+
+You have NOT been given any verified facts about ${config.name}'s history, metrics, incidents, or track record. Therefore do not assert any. Argue from method and principle, not from invented biography.
+
 Write the article JSON now.`;
 
   const res = await fetch(`${base}/chat/completions`, {
@@ -100,9 +110,7 @@ Write the article JSON now.`;
     }),
   });
 
-  if (!res.ok) {
-    throw new Error(`DeepSeek ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  }
+  if (!res.ok) throw new Error(`DeepSeek ${res.status}: ${(await res.text()).slice(0, 300)}`);
 
   const data = await res.json();
   let raw = data.choices?.[0]?.message?.content;
@@ -124,7 +132,9 @@ Write the article JSON now.`;
 
   return {
     title: String(parsed.title || titleHint).slice(0, 120),
-    description: String(parsed.description || '').slice(0, 160) || html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155),
+    description:
+      String(parsed.description || '').slice(0, 160) ||
+      html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155),
     content: html,
   };
 }
@@ -158,14 +168,13 @@ function templateBody(topic) {
   ];
   for (const h of heads) {
     html += `<h2>${esc(h)}</h2>`;
-    html += `<p>${pick(SENTENCES)}</p>`;
-    html += `<p>${pick(SENTENCES)}</p>`;
+    html += `<p>${pick(SENTENCES)}</p><p>${pick(SENTENCES)}</p>`;
   }
   html += `<h2>Closing</h2><p>None of this is complicated, but all of it is deliberate. That is usually the difference between a process that holds and one that quietly erodes.</p>`;
   return html;
 }
 
-// ─── Page shell ─────────────────────────────────────────────────────
+// ─── Markup ─────────────────────────────────────────────────────────
 const STYLE = `
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.7;color:#1a1a2e;background:#fafafa}
@@ -193,12 +202,13 @@ const STYLE = `
   .cards a:hover{color:#e94560}
   .cards .date{display:block;color:#8a90a2;font-size:.82rem;font-weight:400;margin-top:.35rem}
   .lead{color:#3d4459}
+  .banner{background:#fff3cd;border:1px solid #ffe08a;color:#6b5300;padding:.85rem 1.15rem;margin:0 0 1.5rem;border-radius:8px;font-size:.9rem}
 `;
 
-function page({ title, description, canonical, navDepth, body, jsonLd }) {
+function page({ title, description, canonical, navDepth, body, jsonLd, absoluteNav }) {
   const up = '../'.repeat(navDepth);
-  const home = up || './';
-  const blog = `${up}blog/`;
+  const home = absoluteNav ? `https://${config.domain}/` : up || './';
+  const blog = absoluteNav ? `https://${config.domain}/blog/` : `${up}blog/`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -238,10 +248,17 @@ function blogJsonLd(posts) {
   });
 }
 
-// ─── Writers ────────────────────────────────────────────────────────
-function writePost(post) {
-  const canonical = `https://${config.domain}/blog/${post.slug}/`;
-  const jsonLd = JSON.stringify({
+function articleBody(post) {
+  return `<header class="hero"><h1>${esc(post.title)}</h1></header>
+<main><article>
+<div class="meta">By ${esc(config.author)} &middot; ${esc(post.date)}</div>
+${post.content}
+<footer>Originally published at <a href="https://${config.domain}/blog/${post.slug}/">${config.domain}/blog/${post.slug}/</a></footer>
+</article></main>`;
+}
+
+function postJsonLd(post) {
+  return JSON.stringify({
     '@context': 'https://schema.org',
     '@type': 'BlogPosting',
     headline: post.title,
@@ -250,43 +267,132 @@ function writePost(post) {
     dateModified: post.dateISO,
     author: { '@type': 'Person', name: config.author },
     publisher: { '@type': 'Organization', name: config.name, url: `https://${config.domain}/` },
-    mainEntityOfPage: canonical,
+    mainEntityOfPage: `https://${config.domain}/blog/${post.slug}/`,
   });
+}
 
-  const body = `<header class="hero"><h1>${esc(post.title)}</h1></header>
-<main><article>
-<div class="meta">By ${esc(config.author)} &middot; ${esc(post.date)}</div>
-${post.content}
-<footer>Originally published at <a href="${canonical}">${config.domain}/blog/${post.slug}/</a></footer>
-</article></main>`;
+// ─── Storage ────────────────────────────────────────────────────────
+function serialize(post) {
+  return `---\ntitle: ${JSON.stringify(post.title)}\ndate: ${JSON.stringify(post.date)}\ndescription: ${JSON.stringify(post.description)}\nauthor: ${JSON.stringify(config.author)}\nmode: ${JSON.stringify(post.mode || 'ai')}\n---\n\n${post.content}\n`;
+}
 
-  const dir = path.join(POSTS_DIR, post.slug);
-  fs.mkdirSync(dir, { recursive: true });
+function parseFile(file) {
+  const src = fs.readFileSync(file, 'utf8');
+  const m = src.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);
+  if (!m) return null;
+  const get = (k) => {
+    const line = m[1].split('\n').find((l) => l.startsWith(`${k}:`));
+    if (!line) return '';
+    let v = line.slice(k.length + 1).trim();
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v.replace(/^"|"$/g, '');
+    }
+  };
+  const slug = path.basename(file, '.md');
+  return {
+    slug,
+    title: get('title'),
+    date: get('date'),
+    description: get('description'),
+    mode: get('mode'),
+    content: m[2].trim(),
+    dateISO: (slug.match(/\d{4}-\d{2}-\d{2}/) || [''])[0],
+  };
+}
+
+function listDir(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => parseFile(path.join(dir, f)))
+    .filter(Boolean);
+}
+
+const sortPosts = (a, b) =>
+  a.dateISO === b.dateISO ? (a.slug < b.slug ? 1 : -1) : a.dateISO < b.dateISO ? 1 : -1;
+
+// ─── Draft output ───────────────────────────────────────────────────
+function writeDraft(post) {
+  fs.mkdirSync(DRAFTS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(DRAFTS_DIR, `${post.slug}.md`), serialize(post));
+
+  const html = page({
+    title: `${esc(post.title)} — DRAFT | ${esc(config.name)}`,
+    description: esc(post.description),
+    canonical: `https://${config.domain}/blog/${post.slug}/`,
+    navDepth: 0,
+    absoluteNav: true,
+    jsonLd: postJsonLd(post),
+    body: `<div style="max-width:820px;margin:1.5rem auto 0;padding:0 1.5rem"><div class="banner"><strong>DRAFT — not published.</strong> Approve with <code>node scripts/generate-post.cjs --publish ${post.slug}</code></div></div>` +
+      articleBody(post),
+  });
+  fs.writeFileSync(path.join(DRAFTS_DIR, `${post.slug}.html`), html);
+  return post;
+}
+
+function writeDraftIndex(drafts) {
+  const rows = drafts.length
+    ? drafts
+        .map(
+          (d) =>
+            `<li><a href="${d.slug}.html">${esc(d.title)}</a><span class="date">${esc(
+              d.date
+            )} &middot; ${esc(d.mode || 'ai')} &middot; <code>${d.slug}</code></span></li>`
+        )
+        .join('\n')
+    : '<li><em>No pending drafts.</em></li>';
+  const body = `<header class="hero"><h1>Pending drafts</h1><p>${drafts.length} awaiting review</p></header>
+<main><ul class="cards">${rows}</ul>
+<p style="margin-top:1.5rem"><a href="https://${config.domain}/blog/">View published site &rarr;</a></p></main>`;
   fs.writeFileSync(
-    path.join(dir, 'index.html'),
+    path.join(DRAFTS_DIR, 'index.html'),
     page({
-      title: `${esc(post.title)} | ${esc(config.name)}`,
-      description: esc(post.description),
-      canonical,
-      navDepth: 2,
+      title: `Drafts | ${esc(config.name)}`,
+      description: 'Pending drafts awaiting review',
+      canonical: `https://${config.domain}/`,
+      navDepth: 0,
+      absoluteNav: true,
+      jsonLd: '{}',
       body,
-      jsonLd,
     })
-  );
-  fs.mkdirSync(SRC_DIR, { recursive: true });
-  fs.writeFileSync(
-    path.join(SRC_DIR, `${post.slug}.md`),
-    `---\ntitle: "${post.title}"\ndate: "${post.date}"\ndescription: "${post.description}"\nauthor: "${config.author}"\nmode: "${post.mode}"\n---\n\n${post.content}\n`
   );
 }
 
-function writeBlogIndex(posts) {
+// ─── Site build (published posts only) ──────────────────────────────
+function buildSite() {
+  const posts = listDir(SRC_DIR).sort(sortPosts);
+  fs.mkdirSync(POSTS_DIR, { recursive: true });
+
+  // Remove stale published page dirs
+  for (const dir of fs.readdirSync(POSTS_DIR)) {
+    const full = path.join(POSTS_DIR, dir);
+    if (fs.statSync(full).isDirectory() && !posts.some((p) => p.slug === dir)) {
+      fs.rmSync(full, { recursive: true, force: true });
+    }
+  }
+
+  for (const post of posts) {
+    const dir = path.join(POSTS_DIR, post.slug);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'index.html'),
+      page({
+        title: `${esc(post.title)} | ${esc(config.name)}`,
+        description: esc(post.description),
+        canonical: `https://${config.domain}/blog/${post.slug}/`,
+        navDepth: 2,
+        body: articleBody(post),
+        jsonLd: postJsonLd(post),
+      })
+    );
+  }
+
   const cards = posts
     .map((p) => `<li><a href="${p.slug}/">${esc(p.title)}<span class="date">${esc(p.date)}</span></a></li>`)
     .join('\n');
-  const body = `<header class="hero"><h1>Blog</h1><p>${esc(config.tagline)}</p></header>
-<main><ul class="cards">${cards}</ul></main>`;
-  fs.mkdirSync(POSTS_DIR, { recursive: true });
   fs.writeFileSync(
     path.join(POSTS_DIR, 'index.html'),
     page({
@@ -294,24 +400,15 @@ function writeBlogIndex(posts) {
       description: esc(config.about),
       canonical: `https://${config.domain}/blog/`,
       navDepth: 1,
-      body,
+      body: `<header class="hero"><h1>Blog</h1><p>${esc(config.tagline)}</p></header><main><ul class="cards">${cards}</ul></main>`,
       jsonLd: blogJsonLd(posts),
     })
   );
-}
 
-function writeHomepage(posts) {
-  const cards = posts
+  const homeCards = posts
     .slice(0, 5)
     .map((p) => `<li><a href="blog/${p.slug}/">${esc(p.title)}<span class="date">${esc(p.date)}</span></a></li>`)
     .join('\n');
-  const body = `<header class="hero"><h1>${esc(config.name)}</h1><p>${esc(config.tagline)}</p></header>
-<main>
-<p class="lead">${esc(config.about)}</p>
-<h2 style="margin-top:2rem">Latest articles</h2>
-<ul class="cards">${cards}</ul>
-<p style="margin-top:1.5rem"><a href="blog/">View all articles &rarr;</a></p>
-</main>`;
   fs.writeFileSync(
     path.join(SITE_DIR, 'index.html'),
     page({
@@ -319,85 +416,52 @@ function writeHomepage(posts) {
       description: esc(config.about),
       canonical: `https://${config.domain}/`,
       navDepth: 0,
-      body,
+      body: `<header class="hero"><h1>${esc(config.name)}</h1><p>${esc(config.tagline)}</p></header>
+<main><p class="lead">${esc(config.about)}</p>
+<h2 style="margin-top:2rem">Latest articles</h2>
+<ul class="cards">${homeCards}</ul>
+<p style="margin-top:1.5rem"><a href="blog/">View all articles &rarr;</a></p></main>`,
       jsonLd: blogJsonLd(posts),
     })
   );
-}
 
-function writeSitemap(posts) {
   const url = (loc, prio, lastmod) =>
     `  <url><loc>${loc}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}<priority>${prio}</priority></url>`;
-  const entries = [
-    url(`https://${config.domain}/`, '1.0'),
-    url(`https://${config.domain}/blog/`, '0.9'),
-    ...posts.map((p) => url(`https://${config.domain}/blog/${p.slug}/`, '0.7', p.dateISO)),
-  ].join('\n');
   fs.writeFileSync(
     path.join(SITE_DIR, 'sitemap.xml'),
-    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries}\n</urlset>\n`
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${[
+      url(`https://${config.domain}/`, '1.0'),
+      url(`https://${config.domain}/blog/`, '0.9'),
+      ...posts.map((p) => url(`https://${config.domain}/blog/${p.slug}/`, '0.7', p.dateISO)),
+    ].join('\n')}\n</urlset>\n`
   );
-}
 
-function writeStatic() {
   fs.writeFileSync(
     path.join(SITE_DIR, 'robots.txt'),
     `User-agent: *\nAllow: /\nSitemap: https://${config.domain}/sitemap.xml\n`
   );
   fs.writeFileSync(path.join(SITE_DIR, '.nojekyll'), '');
+
+  return posts;
 }
 
-// ─── Archive ────────────────────────────────────────────────────────
-function loadExisting() {
-  const out = [];
-  if (!fs.existsSync(POSTS_DIR)) return out;
-  for (const dir of fs.readdirSync(POSTS_DIR)) {
-    const idx = path.join(POSTS_DIR, dir, 'index.html');
-    const src = path.join(SRC_DIR, `${dir}.md`);
-    if (!fs.existsSync(idx) || !fs.existsSync(src)) continue;
-    const head = fs.readFileSync(src, 'utf8').split('\n');
-    const get = (k) =>
-      (head.find((l) => l.startsWith(`${k}:`)) || '').slice(k.length + 1).trim().replace(/^"|"$/g, '');
-    out.push({
-      slug: dir,
-      title: get('title'),
-      date: get('date'),
-      dateISO: (dir.match(/\d{4}-\d{2}-\d{2}/) || [''])[0],
-    });
-  }
-  return out;
-}
-
-// ─── Run ────────────────────────────────────────────────────────────
-async function main() {
-  const args = process.argv.slice(2);
-  const arg = (k, d) => {
-    const withEq = args.find((a) => a.startsWith(`--${k}=`));
-    if (withEq) return parseInt(withEq.split('=')[1], 10);
-    const idx = args.indexOf(`--${k}`);
-    if (idx !== -1 && args[idx + 1] !== undefined) return parseInt(args[idx + 1], 10);
-    return d;
-  };
-  const useAi = !args.includes('--no-ai') && config.useAI !== false;
-  const count = arg('count', config.postsPerDay);
-  const days = arg('days', 1);
-
-  fs.mkdirSync(SITE_DIR, { recursive: true });
-  fs.mkdirSync(POSTS_DIR, { recursive: true });
-  fs.mkdirSync(SRC_DIR, { recursive: true });
-
-  const existing = loadExisting();
-  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const newPosts = [];
+// ─── Actions ────────────────────────────────────────────────────────
+async function authorDrafts({ count, days, useAi }) {
+  fs.mkdirSync(DRAFTS_DIR, { recursive: true });
+  const published = listDir(SRC_DIR);
+  const pending = listDir(DRAFTS_DIR);
+  const created = [];
 
   for (let d = 0; d < days; d++) {
     for (let i = 0; i < count; i++) {
       const date = new Date();
       date.setDate(date.getDate() - d);
       const dateISO = date.toISOString().slice(0, 10);
+      const stamp = dateISO.replace(/-/g, '');
       const slug = `post-${dateISO}-${stamp.slice(-4)}${String(i + 1).padStart(2, '0')}`;
 
-      if (existing.some((e) => e.slug === slug) || newPosts.some((p) => p.slug === slug)) continue;
+      const taken = (arr) => arr.some((e) => e.slug === slug);
+      if (taken(published) || taken(pending) || taken(created)) continue;
 
       const topic = pick(config.topics);
       const titleHint = pick(TITLE_TEMPLATES)
@@ -412,14 +476,13 @@ async function main() {
           process.stdout.write(`  · authoring "${titleHint}" … `);
           const ai = await aiArticle({ topic, titleHint, dateISO });
           if (ai) {
-            post = { ...ai, slug, date: fmtDate(date), dateISO, topic };
-            mode = 'ai';
+            post = { ...ai, mode: 'ai' };
             process.stdout.write('ok\n');
           } else {
             process.stdout.write('no api key\n');
           }
         } catch (err) {
-          process.stdout.write(`failed (${err.message.slice(0, 120)})\n`);
+          process.stdout.write(`failed (${err.message.slice(0, 140)})\n`);
         }
       }
 
@@ -427,35 +490,117 @@ async function main() {
         const content = templateBody(topic);
         post = {
           title: titleHint,
-          description:
-            content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155) + '…',
+          description: content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155) + '…',
           content,
-          slug,
-          date: fmtDate(date),
-          dateISO,
-          topic,
+          mode: 'template',
         };
       }
 
-      post.mode = mode;
-      writePost(post);
-      newPosts.push(post);
+      post.slug = slug;
+      post.date = fmtDate(date);
+      post.dateISO = dateISO;
+      writeDraft(post);
+      created.push(post);
     }
   }
 
-  const all = [...newPosts, ...existing].sort((a, b) =>
-    a.dateISO === b.dateISO ? (a.slug < b.slug ? 1 : -1) : a.dateISO < b.dateISO ? 1 : -1
-  );
-  writeHomepage(all);
-  writeBlogIndex(all);
-  writeSitemap(all);
-  writeStatic();
+  writeDraftIndex(listDir(DRAFTS_DIR).sort(sortPosts));
 
-  const aiCount = newPosts.filter((p) => p.mode === 'ai').length;
+  const ai = created.filter((p) => p.mode === 'ai').length;
   console.log(
-    `\nGenerated ${newPosts.length} new post(s) [${aiCount} AI, ${newPosts.length - aiCount} template]. Archive total: ${all.length}.`
+    `\nDrafted ${created.length} post(s) [${ai} AI, ${created.length - ai} template]. ` +
+      `Pending review: ${listDir(DRAFTS_DIR).length}.`
   );
-  console.log(`Site written to: ${SITE_DIR}`);
+  console.log(`Nothing published. Review drafts/ then run --publish.`);
+}
+
+function publishDrafts(selector) {
+  const drafts = listDir(DRAFTS_DIR);
+  if (!drafts.length) return console.log('No drafts to publish.');
+
+  const targets = selector ? drafts.filter((d) => d.slug === selector || d.slug.includes(selector)) : drafts;
+  if (!targets.length) {
+    console.error(`No draft matching "${selector}".`);
+    process.exit(1);
+  }
+
+  fs.mkdirSync(SRC_DIR, { recursive: true });
+  for (const d of targets) {
+    fs.writeFileSync(path.join(SRC_DIR, `${d.slug}.md`), serialize(d));
+    fs.rmSync(path.join(DRAFTS_DIR, `${d.slug}.md`), { force: true });
+    fs.rmSync(path.join(DRAFTS_DIR, `${d.slug}.html`), { force: true });
+    console.log(`  ✓ published ${d.slug}: ${d.title}`);
+  }
+
+  const posts = buildSite();
+  writeDraftIndex(listDir(DRAFTS_DIR).sort(sortPosts));
+  console.log(`\nPublished ${targets.length}. Site now has ${posts.length} post(s).`);
+}
+
+function discardDraft(selector) {
+  const d = listDir(DRAFTS_DIR).find((x) => x.slug === selector || x.slug.includes(selector));
+  if (!d) {
+    console.error(`No draft matching "${selector}".`);
+    process.exit(1);
+  }
+  fs.rmSync(path.join(DRAFTS_DIR, `${d.slug}.md`), { force: true });
+  fs.rmSync(path.join(DRAFTS_DIR, `${d.slug}.html`), { force: true });
+  writeDraftIndex(listDir(DRAFTS_DIR).sort(sortPosts));
+  console.log(`Discarded ${d.slug}.`);
+}
+
+function listDrafts() {
+  const drafts = listDir(DRAFTS_DIR).sort(sortPosts);
+  if (!drafts.length) return console.log('No pending drafts.');
+  console.log(`${drafts.length} pending draft(s):\n`);
+  for (const d of drafts) {
+    console.log(`  ${d.slug}  [${d.mode || 'ai'}]`);
+    console.log(`    ${d.title}`);
+    console.log(`    preview: drafts/${d.slug}.html\n`);
+  }
+}
+
+// ─── CLI ────────────────────────────────────────────────────────────
+async function main() {
+  const args = process.argv.slice(2);
+  const flagValue = (k) => {
+    const withEq = args.find((a) => a.startsWith(`--${k}=`));
+    if (withEq) return withEq.split('=')[1];
+    const idx = args.indexOf(`--${k}`);
+    if (idx !== -1 && args[idx + 1] && !args[idx + 1].startsWith('--')) return args[idx + 1];
+    return null;
+  };
+  const num = (k, d) => {
+    const v = flagValue(k);
+    return v === null ? d : parseInt(v, 10);
+  };
+
+  if (args.includes('--list')) return listDrafts();
+
+  if (args.includes('--publish')) {
+    return publishDrafts(flagValue('publish') || null);
+  }
+
+  if (args.includes('--discard')) {
+    const sel = flagValue('discard');
+    if (!sel) {
+      console.error('--discard needs a slug, e.g. --discard post-2026-09-30-093010');
+      process.exit(1);
+    }
+    return discardDraft(sel);
+  }
+
+  if (args.includes('--rebuild')) {
+    const posts = buildSite();
+    console.log(`Rebuilt site from src/posts (${posts.length} post(s)).`);
+    return;
+  }
+
+  return authorDrafts({
+    count: num('count', config.postsPerDay),
+    days: num('days', 1),
+    useAi: !args.includes('--no-ai') && config.useAI !== false,
+  });
 }
 
 main().catch((err) => {
