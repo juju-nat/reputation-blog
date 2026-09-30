@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 /**
- * Reputation Blog — static site generator.
- * Builds a full static site into ./docs (the GitHub Pages source folder).
+ * Reputation Blog — static site generator with AI-authored content.
+ *
+ * Writes a complete static site into ./docs (GitHub Pages source).
+ * Posts are written by an LLM (DeepSeek by default) when an API key is
+ * available; otherwise it falls back to the local template engine so the
+ * pipeline never breaks.
  *
  * Usage:
- *   node scripts/generate-post.mjs
- *   node scripts/generate-post.mjs --count 4
- *   node scripts/generate-post.mjs --count 3 --days 7
+ *   node scripts/generate-post.cjs
+ *   node scripts/generate-post.cjs --count 4
+ *   node scripts/generate-post.cjs --count 3 --days 7
+ *   node scripts/generate-post.cjs --no-ai        # force template mode
  *
- * Each run ADDS to the existing archive (existing posts are preserved).
+ * Existing posts are always preserved; each run appends.
  */
 
 const path = require('path');
@@ -20,131 +25,143 @@ const SITE_DIR = path.join(ROOT, 'docs');
 const POSTS_DIR = path.join(SITE_DIR, 'blog');
 const SRC_DIR = path.join(ROOT, 'src', 'posts');
 
-// ─── Helpers ────────────────────────────────────────────────────────
-const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const esc = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
+const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const fmtDate = (d) =>
   d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-// ─── Copy building blocks ───────────────────────────────────────────
-const TITLE_TEMPLATES = [
-  'Why {topic} Matters for {name} in {year}',
-  'The Complete Guide to {topic} in {year}',
-  '{name}: How We Approach {topic}',
-  '{count} Key Insights About {topic} from {name}',
-  'What Everyone Gets Wrong About {topic}',
-  'How {name} Is Changing {topic}',
-  'The Future of {topic}: Perspectives from {name}',
-  "{name}'s Top {count} Strategies for {topic}",
-  'Understanding {topic}: A Deep Dive by {name}',
-  'The Definitive {name} Playbook for {topic}',
-  'Behind the Scenes: {name} on {topic}',
-  '{topic} in {year}: What {name} Knows That Others Do Not',
-  'The Unexpected Truth About {topic}',
-  'From Zero to Expert: {name} on {topic}',
-  'Why {topic} Is a Priority for {name} Right Now',
-  'The {name} Framework for Mastering {topic}',
-  'A Practical Guide to {topic}',
-  '{topic} Explained: Lessons from {name}',
-  'The Real Impact of {topic} on {name}',
-  'How to Think About {topic} — the {name} Perspective',
-];
-
-const SECTION_HEADS = [
-  'The Core Concept', 'Getting Started', 'Key Principles', 'Best Practices',
-  'Common Mistakes to Avoid', 'Real-World Applications', 'Measuring Success',
-  'Advanced Strategies', 'Future Outlook', 'Expert Perspectives',
-  'Data-Driven Insights', 'Practical Examples', 'Building Momentum',
-  'Scaling Your Approach', 'Sustaining Results',
-];
-
-const LIST_HEADS = [
-  'Start With the Fundamentals', 'Build Trust Through Transparency',
-  'Focus on Quality Over Quantity', 'Measure What Matters',
-  'Iterate Based on Real Data', 'Invest in Continuous Learning',
-  'Collaborate Across Teams', 'Anticipate Market Shifts',
-  'Put the Customer First', 'Leverage Technology Wisely',
-  'Develop a Long-Term Vision', 'Stay Adaptable in Changing Times',
-];
-
-const QUESTIONS = [
-  'What is the most important factor for success?',
-  'How do you measure progress in this area?',
-  'What are the most common mistakes people make?',
-  'How has your approach evolved over time?',
-  'What advice would you give to someone just starting out?',
-  'Where do you see this heading in the next few years?',
-  'What resources would you recommend?',
-  'How does your organization differentiate itself?',
-];
-
-const STARTERS = [
-  'Research consistently shows that', 'Experience demonstrates that',
-  'Industry analysis indicates that', 'Practical application reveals that',
-  'Recent data suggests that', 'Expert consensus points to the view that',
-  'The evidence clearly supports the idea that', 'Real-world application confirms that',
-];
-
-const CONNECTORS = [
-  'Furthermore,', 'In addition,', 'Moreover,', 'Additionally,',
-  'Importantly,', 'Crucially,', 'Significantly,', 'Notably,',
-];
-
-const BODIES = [
-  'organizations that prioritize this approach see measurably better outcomes. The key is to build a systematic framework that adapts as conditions change while maintaining focus on core objectives.',
-  'teams benefit from structured processes that encourage collaboration and knowledge sharing. When people feel empowered to contribute their insights, collective intelligence leads to better decisions and more innovation.',
-  'sustainable success requires balancing immediate needs with long-term strategic goals. That means investing in foundational capabilities even when the return is not yet visible, because those capabilities compound over time.',
-  'data-driven approaches consistently outperform guesswork. By establishing clear metrics, tracking progress regularly, and adjusting strategy based on real results, organizations can maximize impact.',
-  'the landscape continues to evolve rapidly. Those who stay informed about emerging trends and are willing to experiment with new methods will be best positioned to capitalize on new opportunities.',
-  'building strong relationships is fundamental to lasting success. Whether with clients, partners, or team members, investing in genuine connections creates a foundation of trust that supports every other effort.',
-];
-
-function paragraph() {
-  const r = Math.random();
-  let p;
-  if (r < 0.3) p = `${pick(STARTERS)} ${pick(BODIES)}`;
-  else if (r < 0.6) p = `${pick(CONNECTORS)} ${pick(BODIES)}`;
-  else p = pick(BODIES);
-  if (Math.random() < 0.45) {
-    const extra = pick(BODIES);
-    p += ` ${pick(CONNECTORS)} ${extra.charAt(0).toLowerCase()}${extra.slice(1)}`;
+// ─── Env ────────────────────────────────────────────────────────────
+function loadEnv() {
+  const out = {};
+  const envPath = path.join(process.env.HOME || '', '.hermes', '.env');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+      if (!line || line.trim().startsWith('#')) continue;
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
   }
-  return `<p>${p}</p>`;
+  return out;
 }
 
-function buildBody(topic) {
-  const style = randomInt(1, 3);
+// ─── AI authoring ───────────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are a senior subject-matter writer producing bylined articles for an organisation's own website.
 
-  if (style === 1) {
-    let html = `<p>${config.name} has spent years working on ${topic}. This guide distills what actually moves the needle, and why it matters for anyone evaluating ${config.name} today.</p>`;
-    for (let i = 0; i < randomInt(4, 6); i++) {
-      html += `<h2>${pick(SECTION_HEADS)}</h2>${paragraph()}${paragraph()}`;
-    }
-    html += `<h2>Conclusion</h2><p>As ${config.name} continues to refine its approach to ${topic}, one thing stays constant: results come from combining deep expertise with a genuine commitment to delivering value.</p>`;
-    return html;
+Hard rules:
+- Write like a knowledgeable human practitioner, not a content mill. Never use filler transitions ("Furthermore,", "Moreover,", "In today's fast-paced world", "the landscape continues to evolve").
+- Be CONCRETE. Use specific mechanisms, numbers, timeframes, trade-offs, and named practices. No vague generalities that could describe any company in any industry.
+- Take a position. State what actually works, what doesn't, and why.
+- Vary sentence length. Short sentences are fine.
+- Every section heading must be specific to its section's content — never a generic label like "Getting Started" or "Best Practices".
+- Do not invent statistics, awards, client names, certifications, or quotes. If a figure is illustrative, say so explicitly.
+- Do not mention that you are an AI, and do not pad to hit a word count.
+
+Output STRICT JSON only, shaped exactly:
+{"title": "...", "description": "...", "html": "..."}
+- "title": under 65 characters, compelling, includes the subject's name naturally.
+- "description": 140-155 characters, a real meta description (not a summary of the summary).
+- "html": the article body. Use only <p>, <h2>, <h3>, <ul>/<li>, and <blockquote>. No <html>, <head>, <body>, no markdown, no code fences. Open with a lead paragraph, then 4-6 sections. 850-1200 words.`;
+
+async function aiArticle({ topic, titleHint, dateISO }) {
+  const env = loadEnv();
+  const key = process.env.DEEPSEEK_API_KEY || env.DEEPSEEK_API_KEY;
+  if (!key) return null;
+
+  const base = (config.aiBaseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+  const model = config.aiModel || 'deepseek-chat';
+
+  const user = `Write one article for the website of ${config.name}.
+
+Subject being promoted: ${config.name}
+What they do / stand for: ${config.about}
+Author byline: ${config.author}
+Topic for this article: ${topic}
+Suggested angle (rewrite it if you can improve it): ${titleHint}
+Date: ${dateISO}
+
+Audience: people researching ${config.name} — potential customers, partners, and journalists.
+Goal: this article should be genuinely worth reading and should rank for searches for ${config.name}.
+Write the article JSON now.`;
+
+  const res = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: user },
+      ],
+      temperature: 1.0,
+      max_tokens: 4000,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`DeepSeek ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
 
-  if (style === 2) {
-    const count = randomInt(5, 10);
-    let html = `<p>Here are ${count} essential points about ${topic} that ${config.name} has identified through experience and research.</p>`;
-    for (let i = 1; i <= count; i++) {
-      html += `<h3>${i}. ${pick(LIST_HEADS)}</h3>${paragraph()}`;
-      if (i % 3 === 0) {
-        html += `<blockquote>Success here requires patience, consistency, and a willingness to adapt based on real results rather than assumptions.</blockquote>`;
-      }
-    }
-    html += `<h3>Final Thoughts</h3><p>These principles represent distilled experience. Applied systematically, they produce meaningful results in ${topic}.</p>`;
-    return html;
-  }
+  const data = await res.json();
+  let raw = data.choices?.[0]?.message?.content;
+  if (!raw) throw new Error('empty completion');
 
-  let html = `<p>In this Q&amp;A, ${config.author} of ${config.name} answers the questions people ask most often about ${topic}.</p>`;
-  for (let i = 0; i < randomInt(5, 7); i++) {
-    html += `<h3>Q: ${pick(QUESTIONS)}</h3><p>A: ${pick(BODIES)}</p>${paragraph()}`;
+  raw = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  const parsed = JSON.parse(raw);
+
+  const ALLOWED = new Set(['p', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'strong', 'em', 'a']);
+  const html = String(parsed.html || '')
+    .replace(/<\/?(script|style|iframe|object|embed)[^>]*>/gi, '')
+    .replace(/ on[a-z]+="[^"]*"/gi, '')
+    .replace(/<(\/?)([a-zA-Z0-9]+)([^>]*)>/g, (m, close, tag) =>
+      ALLOWED.has(tag.toLowerCase()) ? `<${close}${tag.toLowerCase()}>` : ''
+    )
+    .trim();
+
+  if (html.length < 400) throw new Error('AI returned too little content');
+
+  return {
+    title: String(parsed.title || titleHint).slice(0, 120),
+    description: String(parsed.description || '').slice(0, 160) || html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155),
+    content: html,
+  };
+}
+
+// ─── Template fallback ──────────────────────────────────────────────
+const TITLE_TEMPLATES = [
+  'Why {topic} Matters for {name}',
+  'How {name} Approaches {topic}',
+  'What {name} Has Learned About {topic}',
+  '{name} on {topic}',
+  'The {name} Guide to {topic}',
+  'Inside {name}: {topic}',
+];
+
+const SENTENCES = [
+  'Most teams treat this as a tooling problem when it is really a decision-rights problem.',
+  'The fix is usually unglamorous: write the rule down, assign an owner, and review it quarterly.',
+  'What looks like a speed problem is often a handoff problem in disguise.',
+  'The measurement you pick quietly decides the behaviour you get.',
+  'Consistency beats intensity here, and it is not close.',
+];
+
+function templateBody(topic) {
+  let html = `<p><strong>${esc(config.name)}</strong> works on ${esc(topic)}. This is what that work actually involves, written down plainly.</p>`;
+  const heads = [
+    `What ${topic} actually involves`,
+    'Where most approaches break down',
+    'A sequence that holds up in practice',
+    'How to tell whether it is working',
+    'What changes at scale',
+  ];
+  for (const h of heads) {
+    html += `<h2>${esc(h)}</h2>`;
+    html += `<p>${pick(SENTENCES)}</p>`;
+    html += `<p>${pick(SENTENCES)}</p>`;
   }
-  html += `<h3>About ${config.name}</h3><p>${config.about}</p>`;
+  html += `<h2>Closing</h2><p>None of this is complicated, but all of it is deliberate. That is usually the difference between a process that holds and one that quietly erodes.</p>`;
   return html;
 }
 
@@ -164,6 +181,8 @@ const STYLE = `
   article h2{margin:2rem 0 1rem;color:#16213e;font-size:1.4rem}
   article h3{margin:1.5rem 0 .75rem;color:#0f3460;font-size:1.15rem}
   article p{margin-bottom:1rem}
+  article ul,article ol{margin:0 0 1rem 1.4rem}
+  article li{margin-bottom:.4rem}
   blockquote{border-left:4px solid #e94560;padding-left:1.25rem;margin:1.5rem 0;color:#555;font-style:italic}
   footer{border-top:1px solid #e2e2ea;padding:1.25rem 0;margin-top:3rem;color:#8a90a2;font-size:.85rem}
   a{color:#e94560}
@@ -187,7 +206,6 @@ function page({ title, description, canonical, navDepth, body, jsonLd }) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${title}</title>
 <meta name="description" content="${description}">
-<meta name="keywords" content="${config.keywords}">
 <meta name="author" content="${esc(config.author)}">
 <link rel="canonical" href="${canonical}">
 <meta property="og:title" content="${title}">
@@ -242,22 +260,23 @@ ${post.content}
 <footer>Originally published at <a href="${canonical}">${config.domain}/blog/${post.slug}/</a></footer>
 </article></main>`;
 
-  const html = page({
-    title: `${esc(post.title)} | ${esc(config.name)}`,
-    description: esc(post.description),
-    canonical,
-    navDepth: 2,
-    body,
-    jsonLd,
-  });
-
   const dir = path.join(POSTS_DIR, post.slug);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'index.html'), html);
+  fs.writeFileSync(
+    path.join(dir, 'index.html'),
+    page({
+      title: `${esc(post.title)} | ${esc(config.name)}`,
+      description: esc(post.description),
+      canonical,
+      navDepth: 2,
+      body,
+      jsonLd,
+    })
+  );
   fs.mkdirSync(SRC_DIR, { recursive: true });
   fs.writeFileSync(
     path.join(SRC_DIR, `${post.slug}.md`),
-    `---\ntitle: "${post.title}"\ndate: "${post.date}"\ndescription: "${post.description}"\nauthor: "${config.author}"\n---\n\n${post.content}\n`
+    `---\ntitle: "${post.title}"\ndate: "${post.date}"\ndescription: "${post.description}"\nauthor: "${config.author}"\nmode: "${post.mode}"\n---\n\n${post.content}\n`
   );
 }
 
@@ -328,7 +347,7 @@ function writeStatic() {
   fs.writeFileSync(path.join(SITE_DIR, '.nojekyll'), '');
 }
 
-// ─── Existing archive ───────────────────────────────────────────────
+// ─── Archive ────────────────────────────────────────────────────────
 function loadExisting() {
   const out = [];
   if (!fs.existsSync(POSTS_DIR)) return out;
@@ -350,63 +369,96 @@ function loadExisting() {
 }
 
 // ─── Run ────────────────────────────────────────────────────────────
-const args = process.argv.slice(2);
-const arg = (k, d) => {
-  const withEq = args.find((a) => a.startsWith(`--${k}=`));
-  if (withEq) return parseInt(withEq.split('=')[1], 10);
-  const idx = args.indexOf(`--${k}`);
-  if (idx !== -1 && args[idx + 1] !== undefined) return parseInt(args[idx + 1], 10);
-  return d;
-};
-const count = arg('count', config.postsPerDay);
-const days = arg('days', 1);
+async function main() {
+  const args = process.argv.slice(2);
+  const arg = (k, d) => {
+    const withEq = args.find((a) => a.startsWith(`--${k}=`));
+    if (withEq) return parseInt(withEq.split('=')[1], 10);
+    const idx = args.indexOf(`--${k}`);
+    if (idx !== -1 && args[idx + 1] !== undefined) return parseInt(args[idx + 1], 10);
+    return d;
+  };
+  const useAi = !args.includes('--no-ai') && config.useAI !== false;
+  const count = arg('count', config.postsPerDay);
+  const days = arg('days', 1);
 
-fs.mkdirSync(SITE_DIR, { recursive: true });
-fs.mkdirSync(POSTS_DIR, { recursive: true });
-fs.mkdirSync(SRC_DIR, { recursive: true });
+  fs.mkdirSync(SITE_DIR, { recursive: true });
+  fs.mkdirSync(POSTS_DIR, { recursive: true });
+  fs.mkdirSync(SRC_DIR, { recursive: true });
 
-const existing = loadExisting();
-const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-const newPosts = [];
+  const existing = loadExisting();
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const newPosts = [];
 
-for (let d = 0; d < days; d++) {
-  for (let i = 0; i < count; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() - d);
-    const topic = pick(config.topics);
-    const title = pick(TITLE_TEMPLATES)
-      .replace(/{name}/g, config.name)
-      .replace(/{topic}/g, topic)
-      .replace(/{year}/g, String(date.getFullYear()))
-      .replace(/{count}/g, String(randomInt(3, 12)));
-    const content = buildBody(topic);
-    const description =
-      content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155) + '...';
-    const slug = `post-${date.toISOString().slice(0, 10)}-${stamp.slice(-4)}${String(i + 1).padStart(2, '0')}`;
+  for (let d = 0; d < days; d++) {
+    for (let i = 0; i < count; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() - d);
+      const dateISO = date.toISOString().slice(0, 10);
+      const slug = `post-${dateISO}-${stamp.slice(-4)}${String(i + 1).padStart(2, '0')}`;
 
-    if (existing.some((e) => e.slug === slug) || newPosts.some((p) => p.slug === slug)) continue;
+      if (existing.some((e) => e.slug === slug) || newPosts.some((p) => p.slug === slug)) continue;
 
-    newPosts.push({
-      title,
-      description,
-      content,
-      slug,
-      date: fmtDate(date),
-      dateISO: date.toISOString().slice(0, 10),
-      topic,
-    });
+      const topic = pick(config.topics);
+      const titleHint = pick(TITLE_TEMPLATES)
+        .replace(/{name}/g, config.name)
+        .replace(/{topic}/g, topic);
+
+      let post = null;
+      let mode = 'template';
+
+      if (useAi) {
+        try {
+          process.stdout.write(`  · authoring "${titleHint}" … `);
+          const ai = await aiArticle({ topic, titleHint, dateISO });
+          if (ai) {
+            post = { ...ai, slug, date: fmtDate(date), dateISO, topic };
+            mode = 'ai';
+            process.stdout.write('ok\n');
+          } else {
+            process.stdout.write('no api key\n');
+          }
+        } catch (err) {
+          process.stdout.write(`failed (${err.message.slice(0, 120)})\n`);
+        }
+      }
+
+      if (!post) {
+        const content = templateBody(topic);
+        post = {
+          title: titleHint,
+          description:
+            content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 155) + '…',
+          content,
+          slug,
+          date: fmtDate(date),
+          dateISO,
+          topic,
+        };
+      }
+
+      post.mode = mode;
+      writePost(post);
+      newPosts.push(post);
+    }
   }
+
+  const all = [...newPosts, ...existing].sort((a, b) =>
+    a.dateISO === b.dateISO ? (a.slug < b.slug ? 1 : -1) : a.dateISO < b.dateISO ? 1 : -1
+  );
+  writeHomepage(all);
+  writeBlogIndex(all);
+  writeSitemap(all);
+  writeStatic();
+
+  const aiCount = newPosts.filter((p) => p.mode === 'ai').length;
+  console.log(
+    `\nGenerated ${newPosts.length} new post(s) [${aiCount} AI, ${newPosts.length - aiCount} template]. Archive total: ${all.length}.`
+  );
+  console.log(`Site written to: ${SITE_DIR}`);
 }
 
-newPosts.forEach(writePost);
-
-const all = [...newPosts, ...existing].sort((a, b) =>
-  a.dateISO === b.dateISO ? (a.slug < b.slug ? 1 : -1) : a.dateISO < b.dateISO ? 1 : -1
-);
-writeHomepage(all);
-writeBlogIndex(all);
-writeSitemap(all);
-writeStatic();
-
-console.log(`Generated ${newPosts.length} new post(s). Archive total: ${all.length}.`);
-console.log(`Site written to: ${SITE_DIR}`);
+main().catch((err) => {
+  console.error('FATAL:', err);
+  process.exit(1);
+});

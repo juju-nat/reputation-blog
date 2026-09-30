@@ -38,4 +38,11 @@ module.exports = {
   postsPerDay: 2,
   // URL slug format (date-based)
   slugFormat: "date", // "date" or "random"
+
+  // ─── AI authoring ────────────────────────────────────────────────
+  // When true, posts are written by an LLM (falls back to templates if
+  // no API key is found, so the pipeline never breaks).
+  useAI: true,
+  aiModel: "deepseek-chat",
+  aiBaseUrl: "https://api.deepseek.com",
 };
